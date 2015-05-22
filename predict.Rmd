@@ -1,0 +1,226 @@
+---
+title: "Machine Learning course"
+author: "Bernardas"
+date: "Thursday, May 21, 2015"
+output: html_document
+---
+
+## Table of contents
+This  Machine Learning Course's project writeup consists of:
+
+* Exploratory analysis done
+* Choice of algorithm(s)
+* Cross validation, expected out of sample error
+
+```{r echo=FALSE, cache=TRUE, warning=FALSE}
+options(warn=-1)
+setwd('C:/labs/DS_JH/8.MachLearn')
+suppressWarnings(require(caret))
+suppressWarnings(require(rattle))
+
+#reading data
+trDs <- read.csv("pml-training.csv") 
+tsDs <- read.csv("pml-testing.csv") 
+```
+
+## Exploratory analysis done
+I looked at data using command bellow, some immediate notes follow:
+```{r}
+#head(trDs)
+```
+
+Notes: 
+
+* First column (named "X") is a sequence number. If I don't exclude it from predictors set, it will make a perfect tree using this one column; (i.e. if X<5581 then "A" else if ...). And it will predict all A's for test test (and it did when I tried so). Therefore, exclude column X from any further model training
+```{r}
+plot(trDs$X,1:length(trDs$X),main="X column is a sequence number")
+```
+
+* Most columns appear numeric, but the class is factor. I will convert types of all columns that contain numeric variables to numeric type. I do so because training most algorithms (like glm) can only work with numeric perdictors
+```{r}
+#Column counts by type
+table(sapply(trDs,class))
+```
+
+* Quite a few "NA" and "#DIV/0!" in most columns. In fact there are only 160 out of 19622 complete cases! I will set them to median of a given column value (chose median and not mean because of quite a few huge outliers in data which impact mean value). I do so because training algorithms either ignore or crash upon feeding incomplete cases.
+```{r}
+#Complete cases
+length(trDs[complete.cases(trDs),])
+#Column counts by number of NAs and #DIV/0!'s
+table(sapply(trDs,function(x){length(x[x=="#DIV/0!" | x=="NA"])}))
+```
+
+* This is the code that cleans data: changes types and sets values for NAs and #DIV/0!
+```{r cache=TRUE}
+options(warn=-1)
+intcols<-as.character(c())
+notcols<-as.character(c())
+for (c in colnames(trDs)){
+    if (!all(is.na(as.numeric(as.character(trDs[,c]))))){
+        #place numeric col name to a vector for reference
+        intcols<-rbind(intcols,c)
+        #change col type from factor to numeric
+        trDs[,c] <- as.numeric(as.character(trDs[,c]))
+        #replace NA with median
+        mdn <- median(trDs[!is.na(trDs[,c]),c])
+        trDs[is.na(trDs[,c]),c] <- mdn
+        
+        #some columns e.g. amplitude_yaw_dumbbell have all 0's, they should be removed
+        if (max(trDs[,c]) == min(trDs[,c]))
+            trDs[,c]<-NULL
+        
+        #do the same for test set: change type to factor; replace NAs with median from train set
+        tsDs[,c] <- as.numeric(as.character(tsDs[,c]))
+        tsDs[is.na(tsDs[,c]),c] <- mdn
+    }
+    else{
+        #place non-numeric col name to a vector for reference
+        notcols<-rbind(notcols,c)
+        #certain vectors have only 2 values: NA and DIV/0; remove such as they do not carry information
+        if (all(levels(trDs[,c]) == c("","#DIV/0!")))
+            trDs[,c]<-NULL
+    }
+}
+```
+
+## Choice of algorithm(s)
+Considered using a subset of methods taught in video lectures: 
+
+* Boosting (method=gbm)
+* Random forests (method=rf)
+* Generic linear model (method=glm)
+
+### How boosting perfomed?
+R code I used to train the model was this:
+```{r eval=FALSE}
+#training the model using boosting 
+gbmGrid <-  expand.grid(interaction.depth = 2, n.trees = 10, shrinkage = .1)
+gbmtr <- train(classe ~.-X ,data = trDs, method = "gbm", tuneGrid=gbmGrid,verbose=F)
+```
+
+When evaluating accuracy, I got 81% rate as in-sample error. This is at most what I could expect for out-of-sample accuracy, and that provided model did not overfit. That's not good enough :(
+```{r eval=FALSE}
+#evaluating accuracy
+confusionMatrix(predict(gbmtr,trDs),trDs$classe)
+```
+
+
+### How random forests perfomed?
+Training with random forests did not finish using the following command bellow in 12 hours. I tried subsetting the data to 5%, and still couldn't get it to finish in under an hour. 
+My assumption is that one should reduce the number of predictors before training on RF, but I decided to postpone this until other methods (glm in particular) is tried.
+```{r eval=FALSE}
+#training the model using rf did not finish in 12 hours
+rftr<-train(classe ~ .-X, data=trDs, method="rf", prox=TRUE)
+```
+
+### How general linear models perfomed?
+Since glm works on numeric predicted values, I decided to add dummy variables A,B,C,D, and E for each class, each having values 0 or 1.
+Then I trained five models, one for each class.
+Finally, I looked at in-sample accuracy which was 92-97% for all models, which seems quite good.
+
+```{r eval=FALSE}
+#instead of factor variable class, add 5 dummy vars A,B,C,D,E
+trDs$A <- as.numeric(trDs$classe=="A")
+trDs$B <- as.numeric(trDs$classe=="B")
+trDs$C <- as.numeric(trDs$classe=="C")
+trDs$D <- as.numeric(trDs$classe=="D")
+trDs$E <- as.numeric(trDs$classe=="E")
+
+#trained 5 models
+mdlglma <- train(A ~. ,data = trDs[,!colnames(trDs) %in% c('B','C','D','E','X','classe')], method = "glm")
+mdlglmb <- train(B ~. ,data = trDs[,!colnames(trDs) %in% c('A','C','D','E','X','classe')], method = "glm")
+mdlglmc <- train(C ~. ,data = trDs[,!colnames(trDs) %in% c('A','B','D','E','X','classe')], method = "glm")
+mdlglmd <- train(D ~. ,data = trDs[,!colnames(trDs) %in% c('A','B','C','E','X','classe')], method = "glm")
+mdlglme <- train(E ~. ,data = trDs[,!colnames(trDs) %in% c('A','B','C','D','X','classe')], method = "glm")
+
+#confusion matrix for mdlglma produced 97%, all others were similar
+confusionMatrix(abs(round(predict(mdlglma,trDs))),trDs$A)
+confusionMatrix(abs(round(predict(mdlglmb,trDs))),trDs$B)
+confusionMatrix(abs(round(predict(mdlglmc,trDs))),trDs$C)
+confusionMatrix(abs(round(predict(mdlglmd,trDs))),trDs$D)
+confusionMatrix(abs(round(predict(mdlglmc,trDs))),trDs$E)
+```
+
+In order to find the predicted classe, I took the max of predicted values of columns A,B,C,D,E.
+Then, evaluate the in-sample accuracy rate for my "blended" model, which consists of MAX(pred(A:E))
+```{r eval=FALSE}
+trpred<-matrix(rep(0.0,5*length(trDs$X)),ncol=length(trDs$X))
+rownames(trpred)<-c('A','B','C','D','E')
+trpred["A",]<-predict(mdlglma,trDs)
+trpred["B",]<-predict(mdlglmb,trDs)
+trpred["C",]<-predict(mdlglmc,trDs)
+trpred["D",]<-predict(mdlglmd,trDs)
+trpred["E",]<-predict(mdlglme,trDs)
+#see the max score having class (save in predClasseTr)
+library(nnet)
+predClasseTr<-rownames(trpred[apply(trpred, 2, function(x) {which.is.max(x)}),])
+#check in sample accuracy: 89%
+confusionMatrix(predClasseTr,trDs$classe)
+```
+
+
+## Cross validation, expected out of sample error: 11%
+My approach to estimate the out-of-sample error was:
+
+* Divide training data to training (90%) and validation (10%)
+* Apply the training algorithm that performed the best (glm) on training data
+* Predict values for validation data and compare those predictions against the actual validation data classe
+* The error rate of the above will be my estimate for out-of-sample error rate
+
+, I also considered using e.g. 10 folds, but training just once takes significant time (~60min in my case), so I rejected such a cross validation approach, although I assume it could have produced a more accurate out-of-sample error rate's estimate.
+
+This is my R code:
+```{r eval=FALSE}
+#divide training data to training (90%) and validation (10%)
+smpl <- sample(1:nrow(trDs), round(nrow(trDs)*0.90), replace=FALSE)
+trtr90<-trDs[smpl,]
+trvld10<-trDs[-smpl,]
+
+#train the models on training data (90%)
+mdl90a <- train(A ~. ,data = trtr90[,!colnames(trtr90) %in% c('B','C','D','E','X','classe')], method = "glm")
+mdl90b <- train(B ~. ,data = trtr90[,!colnames(trtr90) %in% c('A','C','D','E','X','classe')], method = "glm")
+mdl90c <- train(C ~. ,data = trtr90[,!colnames(trtr90) %in% c('A','B','D','E','X','classe')], method = "glm")
+mdl90d <- train(D ~. ,data = trtr90[,!colnames(trtr90) %in% c('A','B','C','E','X','classe')], method = "glm")
+mdl90e <- train(E ~. ,data = trtr90[,!colnames(trtr90) %in% c('A','B','C','D','X','classe')], method = "glm")
+
+#produce predicted values on validation data (10%)
+vldpred<-matrix(rep(0.0,5*length(trvld10$X)),ncol=length(trvld10$X))
+rownames(vldpred)<-c('A','B','C','D','E')
+vldpred["A",]<-predict(mdl90a,trvld10)
+vldpred["B",]<-predict(mdl90b,trvld10)
+vldpred["C",]<-predict(mdl90c,trvld10)
+vldpred["D",]<-predict(mdl90d,trvld10)
+vldpred["E",]<-predict(mdl90e,trvld10)
+
+#answer = the max score having class
+predClasseVld<-rownames(vldpred[apply(vldpred, 2, function(x) {which.is.max(x)}),])
+
+#get accuracy (1-error) rate: 89% (out of sample error estimate: 11%)
+confusionMatrix(predClasseVld,trvld10$classe)
+```
+
+Finally, I had to predict the test data. This is my code to do it:
+```{r eval=FALSE}
+#store predictions for dummy vars in a matrix
+tspred<-matrix(rep(0.0,5*length(tsDs$X)),ncol=length(tsDs$X))
+rownames(tspred)<-c('A','B','C','D','E')
+tspred["A",]<-predict(mdlglma,tsDs)
+tspred["B",]<-predict(mdlglmb,tsDs)
+tspred["C",]<-predict(mdlglmc,tsDs)
+tspred["D",]<-predict(mdlglmd,tsDs)
+tspred["E",]<-predict(mdlglme,tsDs)
+
+#answer = the max score having class
+answers<-rownames(tspred[apply(tspred, 2, function(x) {which.is.max(x)}),])
+#write answers out to files for submission
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+pml_write_files(answers)
+```
+
+Submitted, got 100% correct. This is pretty lucky, I expected only 89% accuracy.
